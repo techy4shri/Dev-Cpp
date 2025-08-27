@@ -121,6 +121,10 @@ implementation
 uses
   System.UITypes, MultiLangSupport, Macros, devExec, main, StrUtils, System.IOUtils;
 
+const
+  CPP17_OPTION = '-std=c++17';
+  OPENMP_OPTION = '-fopenmp';
+
 procedure TCompiler.DoLogEntry(const msg: String);
 begin
   if Assigned(fOnLogEntry) then
@@ -299,8 +303,11 @@ begin
   Writeln(F, 'BIN      = ' + GenMakePath1(ExtractRelativePath(Makefile, fProject.Executable)));
   Writeln(F, 'CXXFLAGS = $(CXXINCS) ' + fCppCompileParams);
   Writeln(F, 'CFLAGS   = $(INCS) ' + fCompileParams);
-//  Writeln(F, 'RD       = ' + CLEAN_PROGRAM + ' -f'); // TODO: use del or rm?
-  Writeln(F, 'DEL      = ' + CLEAN_PROGRAM);
+  {$IFDEF MSWINDOWS}
+  Writeln(F, 'DEL     = del /q');
+  {$ELSE}
+  Writeln(F, 'DEL     = rm -f');
+  {$ENDIF}
 
   // This needs to be put in before the clean command.
   if fProject.Options.typ = dptDyn then begin
@@ -516,9 +523,6 @@ begin
 end;
 
 procedure TCompiler.GetCompileParams;
-var
-  I, val: integer;
-  option: TCompilerOption;
 begin
   // Force syntax checking when we have to
   if fCheckSyntax then begin
@@ -527,87 +531,13 @@ begin
     fMakeParams := '';
   end else begin
     fCompileParams := '';
-    fCppCompileParams := '';
+    fCppCompileParams := CPP17_OPTION; // Add C++17 support by default for C++
     fMakeParams := '';
   end;
 
-  // Walk all options
-  for I := 0 to fCompilerSet.Options.Count - 1 do begin
-    option := PCompilerOption(fCompilerSet.Options[I])^;
-
-    // consider project specific options for the compiler, else global compiler options
-    if (Assigned(fProject) and (I < Length(fProject.Options.CompilerOptions))) or (not Assigned(fProject) and
-      (option.Value > 0)) then begin
-      if option.IsC then begin
-        if Assigned(option.Choices) then begin
-          if Assigned(fProject) then
-            val := fProject.Options.CompilerOptions[I]
-          else
-            val := option.Value;
-          if (val > 0) and (val < option.Choices.Count) then
-            fCompileParams := fCompileParams + ' ' + option.Setting +
-              option.Choices.Values[option.Choices.Names[val]];
-        end else if (Assigned(fProject) and (fProject.Options.CompilerOptions[I] = 1)) or (not
-          Assigned(fProject)) then begin
-          fCompileParams := fCompileParams + ' ' + option.Setting;
-        end;
-      end;
-      if option.IsCpp then begin
-        if Assigned(option.Choices) then begin
-          if Assigned(fProject) then
-            val := fProject.Options.CompilerOptions[I]
-          else
-            val := option.Value;
-          if (val > 0) and (val < option.Choices.Count) then
-            fCppCompileParams := fCppCompileParams + ' ' + option.Setting +
-              option.Choices.Values[option.Choices.Names[val]];
-        end else if (Assigned(fProject) and (fProject.Options.CompilerOptions[I] = 1)) or (not
-          Assigned(fProject)) then begin
-          fCppCompileParams := fCppCompileParams + ' ' + option.Setting;
-        end;
-      end;
-       if (not option.IsC) AND (not option.IsCpp) AND (not option.IsLinker) then begin
-        if option.Setting='-j' then
-        begin
-          if Assigned(option.Choices) then begin
-            if Assigned(fProject) then
-              val := fProject.Options.CompilerOptions[I]
-            else
-              val := option.Value;
-            if (val > 0) and (val < option.Choices.Count) then
-              fMakeParams := fMakeParams + ' ' + option.Setting +
-                option.Choices.Values[option.Choices.Names[val]];
-          end else if (Assigned(fProject) and (fProject.Options.CompilerOptions[I] = 1)) or (not
-            Assigned(fProject)) then begin
-            fMakeParams := fMakeParams + ' ' + option.Setting + option.Choices.Values[option.Choices.Names[val]];
-          end;
-        end;
-      end;
-
-    end;
-  end;
-
-  // Add custom commands inherited from Tools >> Compiler Options
-  with fCompilerSet do begin
-    if (Length(CompOpts) > 0) and AddtoComp then begin
-      fCompileParams := fCompileParams + ' ' + CompOpts;
-      fCppCompileParams := fCppCompileParams + ' ' + CompOpts;
-    end;
-  end;
-
-  // Add custom commands at the end so the advanced user can control everything
-  if Assigned(fProject) and (fTarget = ctProject) then begin
-    if Length(fProject.Options.CompilerCmd) > 0 then
-      fCompileParams := fCompileParams + ' ' + Trim(StringReplace(fProject.Options.CompilerCmd, '_@@_', ' ',
-        [rfReplaceAll]));
-    if Length(fProject.Options.CppCompilerCmd) > 0 then
-      fCppCompileParams := fCppCompileParams + ' ' + Trim(StringReplace(fProject.Options.CppCompilerCmd, '_@@_', ' ',
-        [rfReplaceAll]));
-  end;
-
-  fCompileParams := Trim(ParseMacros(fCompileParams));
-  fCppCompileParams := Trim(ParseMacros(fCppCompileParams));
-  fMakeParams := Trim(ParseMacros(fMakeParams));
+  // Add OpenMP support
+  fCompileParams := fCompileParams + ' ' + OPENMP_OPTION;
+  fCppCompileParams := fCppCompileParams + ' ' + OPENMP_OPTION;
 end;
 
 procedure TCompiler.CheckSyntax;
@@ -952,7 +882,8 @@ begin
         DoLogEntry(Lang[ID_LOG_PROCESSINGMAKE]);
         DoLogEntry('--------');
         DoLogEntry(Format(Lang[ID_LOG_MAKEFILEPROC],
-          [IncludeTrailingPathDelimiter(fCompilerSet.BinDir[0]) + fCompilerSet.MakeName]));
+          [IncludeTrailingPathDelimiter(fCompilerSet.BinDir[0]) + fCompilerSet.MakeName]))
+        ;
         DoLogEntry(Format(Lang[ID_LOG_COMMAND], [cmdLine]));
         DoLogEntry('');
 
@@ -1166,6 +1097,9 @@ begin
   // Add libraries
   fLibrariesParams := FormatList(fCompilerSet.LibDir, cAppendStr);
 
+  // Add OpenMP library
+  fLibrariesParams := fLibrariesParams + ' -lgomp';
+
   // Add global compiler linker extras
   if fCompilerSet.AddtoLink and (Length(fCompilerSet.LinkOpts) > 0) then
     fLibrariesParams := fLibrariesParams + ' ' + fCompilerSet.LinkOpts;
@@ -1217,6 +1151,10 @@ var
 begin
   fIncludesParams := FormatList(fCompilerSet.CDir, cAppendStr);
   fCppIncludesParams := FormatList(fCompilerSet.CppDir, cAppendStr);
+
+  // Add OpenMP includes
+  fIncludesParams := fIncludesParams + ' -I"' + fCompilerSet.BinDir[0] + '\..\lib\gcc\x86_64-w64-mingw32\include\omp.h"';
+  fCppIncludesParams := fCppIncludesParams + ' -I"' + fCompilerSet.BinDir[0] + '\..\lib\gcc\x86_64-w64-mingw32\include\omp.h"';
 
   if (fTarget = ctProject) and assigned(fProject) then
     for i := 0 to pred(fProject.Options.Includes.Count) do
